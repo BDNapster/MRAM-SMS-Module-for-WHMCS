@@ -1,6 +1,6 @@
 # MRAM SMS Module for WHMCS
 
-Send SMS notifications to clients via **MRAM SMS Gateway** (msg.mram.com.bd) directly from your WHMCS admin panel.
+Send SMS notifications to clients via **MRAM SMS Gateway** (msg.mram.com.bd) directly from your WHMCS admin panel. Developed By Codeisoft.com
 
 ## Features
 
