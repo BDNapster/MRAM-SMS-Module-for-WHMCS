@@ -19,7 +19,7 @@ function mram_sms_config()
     return [
         'name'        => 'MRAM SMS',
         'description' => 'Send SMS notifications to clients via MRAM SMS Gateway (msg.mram.com.bd). Supports bulk SMS, automated notifications, and delivery tracking.',
-        'version'     => '9.9.0',
+        'version'     => '10.0.0',
         'author'      => 'MRAM SMS Module',
         'fields'      => [
             'api_key' => [
@@ -212,10 +212,20 @@ function mram_sms_output($vars)
         return;
     }
     if ($action === 'ajax_check_dlr') {
+        ob_clean();
+        header('Content-Type: application/json');
         $api = new MramSmsApi($vars['api_key']);
         $shootId = isset($_REQUEST['shoot_id']) ? $_REQUEST['shoot_id'] : '';
         $dlr = $api->getDeliveryReport($shootId);
         echo json_encode(['dlr' => $dlr]);
+        die();
+    }
+    if ($action === 'ajax_get_reports') {
+        ob_clean();
+        header('Content-Type: application/json');
+        $api = new MramSmsApi($vars['api_key']);
+        $dlr = $api->getDeliveryReport('');
+        echo json_encode(['success' => true, 'data' => $dlr]);
         die();
     }
 
@@ -259,7 +269,7 @@ function mram_sms_output($vars)
     </style>';
 
     echo '<div class="mram-nav">';
-    $tabs = ['dashboard' => '📊 Dashboard', 'templates' => '📝 Templates', 'bulk' => '📨 Bulk SMS', 'manual' => '✉️ Manual SMS', 'logs' => '📋 SMS Log', 'settings' => '⚙️ Settings'];
+    $tabs = ['dashboard' => '📊 Dashboard', 'templates' => '📝 Templates', 'bulk' => '📨 Bulk SMS', 'manual' => '✉️ Manual SMS', 'logs' => '📋 SMS Log', 'reports' => '📈 Reports', 'settings' => '⚙️ Settings'];
     foreach ($tabs as $key => $label) {
         $active = ($action === $key) ? 'active' : '';
         echo "<a href='{$modulelink}&action={$key}' class='{$active}'>{$label}</a>";
@@ -276,6 +286,9 @@ function mram_sms_output($vars)
         case 'manual':
             mram_sms_page_manual($vars);
             break;
+        case 'reports':
+            mram_sms_page_reports($vars);
+            break;
         case 'logs':
             mram_sms_page_logs($vars);
             break;
@@ -287,7 +300,7 @@ function mram_sms_output($vars)
             break;
     }
     echo '<div style="text-align:center; margin-top:30px; padding:15px; border-top:1px solid #e3e6f0; color:#888; font-size:13px;">';
-    echo 'MRAM SMS Gateway Module v9.9 | Developed by <a href="https://codeisoft.com" target="_blank" style="color:#4e73df; text-decoration:none;">Codeisoft</a>';
+    echo 'MRAM SMS Gateway Module v10.0 | Developed by <a href="https://codeisoft.com" target="_blank" style="color:#4e73df; text-decoration:none;">Codeisoft</a>';
     echo '</div>';
 }
 
@@ -808,5 +821,191 @@ function mram_sms_page_manual($vars)
 
     // Auto-update preview when message changes
     document.getElementById('manual-message').addEventListener('input', updatePreview);
+    </script>";
+}
+
+function mram_sms_page_reports($vars)
+{
+    require_once __DIR__ . '/mram_sms_api.php';
+    $modulelink = $vars['modulelink'];
+
+    // Local stats from log table
+    $totalSent = Capsule::table('mod_mram_sms_log')->count();
+    $totalSuccess = Capsule::table('mod_mram_sms_log')->where('status', 'sent')->count();
+    $totalFailed = Capsule::table('mod_mram_sms_log')->where('status', 'failed')->count();
+
+    // Calculate total cost estimate (from local records)
+    $smsWithIds = Capsule::table('mod_mram_sms_log')->whereNotNull('sms_shoot_id')->where('sms_shoot_id', '!=', '')->count();
+
+    echo '<div class="mram-card"><h3>📈 Reports & Statistics</h3>';
+
+    // Summary stats cards
+    echo '<div class="mram-stats">';
+    echo "<div class='mram-stat-card'><div class='number' style='color:#4e73df'>{$totalSent}</div><div class='label'>Total SMS Sent</div></div>";
+    echo "<div class='mram-stat-card'><div class='number' style='color:#1cc88a'>{$totalSuccess}</div><div class='label'>Delivered</div></div>";
+    echo "<div class='mram-stat-card'><div class='number' style='color:#e74a3b'>{$totalFailed}</div><div class='label'>Failed</div></div>";
+    echo "<div class='mram-stat-card'><div class='number' id='report-balance'>...</div><div class='label'>Current Balance</div></div>";
+    echo '</div>';
+    echo '</div>';
+
+    // DLR Section - fetched from MRAM API
+    echo '<div class="mram-card"><h3>📊 View DLR (Delivery Reports from MRAM API)</h3>';
+    echo '<p style="color:#666; margin-bottom:15px;">Delivery reports fetched directly from <strong>msg.mram.com.bd</strong> API.</p>';
+
+    // Lookup by Shoot ID
+    echo '<div style="display:flex; gap:10px; margin-bottom:15px; align-items:center;">';
+    echo '<input type="text" id="dlr-shoot-id" placeholder="Enter Shoot ID (leave blank for all)" style="padding:8px; border:1px solid #d1d3e2; border-radius:4px; width:300px;">';
+    echo '<button class="mram-btn mram-btn-info" onclick="fetchDLR()">🔍 Fetch DLR</button>';
+    echo '<span id="dlr-status" style="margin-left:10px;"></span>';
+    echo '</div>';
+
+    echo '<div id="dlr-results">';
+    echo '<p style="color:#888;">Click "Fetch DLR" to load delivery reports from the MRAM API.</p>';
+    echo '</div>';
+    echo '</div>';
+
+    // Local SMS Log with shoot IDs for quick DLR lookup
+    $recentWithIds = Capsule::table('mod_mram_sms_log')
+        ->whereNotNull('sms_shoot_id')
+        ->where('sms_shoot_id', '!=', '')
+        ->orderBy('created_at', 'desc')
+        ->limit(20)
+        ->get();
+
+    if (count($recentWithIds) > 0) {
+        echo '<div class="mram-card"><h3>🔗 Recent SMS with Shoot IDs (Quick DLR Lookup)</h3>';
+        echo '<table class="mram-table"><thead><tr><th>Time</th><th>Phone</th><th>Shoot ID</th><th>Status</th><th>Action</th></tr></thead><tbody>';
+        foreach ($recentWithIds as $sms) {
+            $statusClass = $sms->status === 'sent' ? 'mram-badge-success' : 'mram-badge-danger';
+            echo "<tr>";
+            echo "<td>{$sms->created_at}</td>";
+            echo "<td>{$sms->phone}</td>";
+            echo "<td><code>{$sms->sms_shoot_id}</code></td>";
+            echo "<td><span class='mram-badge {$statusClass}'>{$sms->status}</span></td>";
+            echo "<td><button class='mram-btn mram-btn-info' style='padding:4px 10px; font-size:12px;' onclick=\"viewDLR('{$sms->sms_shoot_id}')\">View DLR</button></td>";
+            echo "</tr>";
+        }
+        echo '</tbody></table></div>';
+    }
+
+    // JavaScript for DLR fetching
+    echo "<script>
+    // Fetch balance
+    fetch('{$modulelink}&action=ajax_check_balance')
+        .then(function(r){return r.json();})
+        .then(function(d){document.getElementById('report-balance').textContent=d.balance||'Error';})
+        .catch(function(){document.getElementById('report-balance').textContent='Error';});
+
+    function viewDLR(shootId) {
+        document.getElementById('dlr-shoot-id').value = shootId;
+        fetchDLR();
+    }
+
+    function fetchDLR() {
+        var shootId = document.getElementById('dlr-shoot-id').value.trim();
+        var statusEl = document.getElementById('dlr-status');
+        var resultsEl = document.getElementById('dlr-results');
+        statusEl.innerHTML = '<span class=\"mram-badge mram-badge-warning\">⏳ Loading...</span>';
+
+        fetch('{$modulelink}&action=ajax_check_dlr&shoot_id=' + encodeURIComponent(shootId))
+            .then(function(r){return r.json();})
+            .then(function(d){
+                statusEl.innerHTML = '<span class=\"mram-badge mram-badge-success\">✅ Loaded</span>';
+                var dlr = d.dlr;
+
+                if (!dlr || (typeof dlr === 'string' && dlr.trim() === '')) {
+                    resultsEl.innerHTML = '<p style=\"color:#888;\">No DLR data returned. The shoot ID may be invalid or DLR not yet available.</p>';
+                    return;
+                }
+
+                // If DLR is a string (error or simple response)
+                if (typeof dlr === 'string') {
+                    resultsEl.innerHTML = '<div class=\"mram-card\" style=\"margin:0;\"><pre style=\"white-space:pre-wrap; word-wrap:break-word;\">' + escapeHtml(dlr) + '</pre></div>';
+                    return;
+                }
+
+                // If DLR is an array of records
+                if (Array.isArray(dlr)) {
+                    renderDLRTable(dlr);
+                    return;
+                }
+
+                // If DLR is an object (single record or structured response)
+                if (typeof dlr === 'object') {
+                    // Check if it has a data array
+                    if (dlr.data && Array.isArray(dlr.data)) {
+                        renderDLRTable(dlr.data);
+                    } else if (dlr.error) {
+                        resultsEl.innerHTML = '<p style=\"color:#e74a3b;\">Error: ' + escapeHtml(String(dlr.error)) + '</p>';
+                    } else {
+                        // Single record - show as table
+                        renderDLRTable([dlr]);
+                    }
+                    return;
+                }
+
+                resultsEl.innerHTML = '<pre>' + escapeHtml(JSON.stringify(dlr, null, 2)) + '</pre>';
+            })
+            .catch(function(e){
+                statusEl.innerHTML = '<span class=\"mram-badge mram-badge-danger\">❌ Error</span>';
+                resultsEl.innerHTML = '<p style=\"color:#e74a3b;\">Failed to fetch DLR: ' + e.message + '</p>';
+            });
+    }
+
+    function renderDLRTable(records) {
+        var resultsEl = document.getElementById('dlr-results');
+        if (!records || records.length === 0) {
+            resultsEl.innerHTML = '<p style=\"color:#888;\">No delivery records found.</p>';
+            return;
+        }
+
+        // Get all unique keys from records
+        var keys = [];
+        records.forEach(function(r) {
+            Object.keys(r).forEach(function(k) {
+                if (keys.indexOf(k) === -1) keys.push(k);
+            });
+        });
+
+        var html = '<div style=\"margin-bottom:10px; color:#666;\">Showing ' + records.length + ' record(s)</div>';
+        html += '<div style=\"overflow-x:auto;\"><table class=\"mram-table\"><thead><tr>';
+        keys.forEach(function(k) {
+            html += '<th>' + escapeHtml(k) + '</th>';
+        });
+        html += '</tr></thead><tbody>';
+
+        records.forEach(function(r) {
+            html += '<tr>';
+            keys.forEach(function(k) {
+                var val = r[k] !== undefined && r[k] !== null ? String(r[k]) : '';
+                // Color-code status fields
+                if (k.toLowerCase().indexOf('status') !== -1) {
+                    var lower = val.toLowerCase();
+                    if (lower === 'delivered' || lower === 'sent') {
+                        val = '<span class=\"mram-badge mram-badge-success\">' + escapeHtml(val) + '</span>';
+                    } else if (lower === 'failed' || lower === 'rejected' || lower === 'undelivered') {
+                        val = '<span class=\"mram-badge mram-badge-danger\">' + escapeHtml(val) + '</span>';
+                    } else if (lower === 'pending' || lower === 'queued') {
+                        val = '<span class=\"mram-badge mram-badge-warning\">' + escapeHtml(val) + '</span>';
+                    } else {
+                        val = escapeHtml(val);
+                    }
+                } else {
+                    val = escapeHtml(val);
+                }
+                html += '<td style=\"max-width:300px; word-wrap:break-word; white-space:normal;\">' + val + '</td>';
+            });
+            html += '</tr>';
+        });
+
+        html += '</tbody></table></div>';
+        resultsEl.innerHTML = html;
+    }
+
+    function escapeHtml(str) {
+        var div = document.createElement('div');
+        div.appendChild(document.createTextNode(str));
+        return div.innerHTML;
+    }
     </script>";
 }
