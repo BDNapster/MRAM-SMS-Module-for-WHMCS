@@ -105,4 +105,4 @@ modules/addons/mram_sms/
 For API issues, contact MRAM SMS support at msg.mram.com.bd.
 
 ---
-**Version:** 9.9.0
+**Version:** 10.0.0
